@@ -2,6 +2,7 @@
 require "logstash/codecs/base"
 require "logstash/util/charset"
 require "logstash/timestamp"
+require "logstash/codecs/contextual_buffer"
 require "logstash/codecs/auto_flush"
 
 # The multiline codec will collapse multiline messages and merge them into a
@@ -134,6 +135,10 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
 
   public
 
+  def clone
+    super.add_listener(@listener)
+  end
+
   def register
     require "grok-pure" # rubygem 'jls-grok'
     require 'logstash/patterns/core'
@@ -159,7 +164,7 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
     @grok.compile(@pattern)
     @logger.debug("Registered multiline plugin", :type => @type, :config => @config)
 
-    reset_buffer
+    @buffer = ContextualBuffer.new(@max_lines, @max_bytes)
 
     @handler = method("do_#{@what}".to_sym)
 
@@ -171,16 +176,18 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
     end
   end # def register
 
-  def accept(listener)
-    # memoize references to listener that holds upstream state
-    @previous_listener = @last_seen_listener || listener
-    @last_seen_listener = listener
-    decode(listener.data) do |event|
-      what_based_listener.process_event(event)
+  def add_listener(listener)
+    @listener = listener
+    self
+  end
+
+  def decode_accept(ctx, data)
+    decode(data, ctx) do |event|
+      process_event(event)
     end
   end
 
-  def decode(text, &block)
+  def decode(text, ctx = {}, &block)
     text = @converter.convert(text)
     text.split("\n").each do |line|
       match = @grok.match(line)
@@ -188,14 +195,14 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
                     :match => !match.nil?, :negate => @negate)
 
       # Add negate option
-      match = (match and !@negate) || (!match and @negate)
-      @handler.call(line, match, &block)
+      match = (match && !@negate) || (!match && @negate)
+      @handler.call(line, match, ctx, &block)
     end
   end # def decode
 
-  def buffer(text)
-    @buffer_bytes += text.bytesize
-    @buffer.push(text).tap do |b|
+  def buffer(text, ctx)
+    @buffer.overwrite_context(ctx) if @buffer.empty?
+    @buffer.append(text).tap do |b|
       # do start but preserve the return value
       auto_flush_runner.start
     end
@@ -203,68 +210,46 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
 
   def flush(&block)
     if block_given? && @buffer.any?
-      no_error = true
-      events = merge_events
+      event = build_event
       begin
-        yield events
+        yield event
+        @buffer.clear
       rescue ::Exception => e
         # need to rescue everything
         # likliest cause: backpressure or timeout by exception
         # can't really do anything but leave the data in the buffer for next time if there is one
         @logger.error("Multiline: flush downstream error", :exception => e)
-        no_error = false
       end
-      reset_buffer if no_error
     end
   end
 
   def auto_flush
     flush do |event|
-      @last_seen_listener.process_event(event)
+      process_event(event)
     end
   end
 
-  def merge_events
+  def process_event(event)
+    @buffer.context[:action] = "event"
+    @listener.process(@buffer.context, event)
+  end
+
+  def build_event
     event = LogStash::Event.new(LogStash::Event::TIMESTAMP => @time, "message" => @buffer.join(NL))
-    event.tag @multiline_tag if @multiline_tag && @buffer.size > 1
-    event.tag "multiline_codec_max_bytes_reached" if over_maximum_bytes?
-    event.tag "multiline_codec_max_lines_reached" if over_maximum_lines?
+    event.tag @multiline_tag if @multiline_tag && @buffer.multiple_lines?
+    event.tag "multiline_codec_max_bytes_reached" if @buffer.over_maximum_bytes?
+    event.tag "multiline_codec_max_lines_reached" if @buffer.over_maximum_lines?
     event
   end
 
-  def reset_buffer
-    @buffer = []
-    @buffer_bytes = 0
+  def do_next(text, matched, ctx, &block)
+    buffer(text, ctx)
+    flush(&block) if !matched || @buffer.over_limits?
   end
 
-  def doing_previous?
-    @what == "previous"
-  end
-
-  def what_based_listener
-    doing_previous? ? @previous_listener : @last_seen_listener
-  end
-
-  def do_next(text, matched, &block)
-    buffer(text)
-    flush(&block) if !matched || buffer_over_limits?
-  end
-
-  def do_previous(text, matched, &block)
-    flush(&block) if !matched || buffer_over_limits?
-    buffer(text)
-  end
-
-  def over_maximum_lines?
-    @buffer.size > @max_lines
-  end
-
-  def over_maximum_bytes?
-    @buffer_bytes >= @max_bytes
-  end
-
-  def buffer_over_limits?
-    over_maximum_lines? || over_maximum_bytes?
+  def do_previous(text, matched, ctx, &block)
+    flush(&block) if !matched || @buffer.over_limits?
+    buffer(text, ctx)
   end
 
   def encode(event)
