@@ -158,6 +158,10 @@ module LogStash module Codecs class IdentityMapCodec
     stream_codec(listener.path).accept(listener)
   end
 
+  def decode_accept(ctx, data)
+    stream_codec(ctx[:path]).decode_accept(ctx, data)
+  end
+
   alias_method :<<, :decode
 
   def encode(event, identity = nil)
