@@ -274,10 +274,7 @@ module LogStash module Codecs class Multiline < LogStash::Codecs::Base
   end # def encode
 
   def close
-    if auto_flush_runner.pending?
-      #will cancel task if necessary
-      auto_flush_runner.stop
-    end
+    auto_flush_runner.stop
   end
 
   def auto_flush_active?
