@@ -21,15 +21,12 @@ module LogStash module Codecs class RetriggerableTask
   def retrigger
     return if stopped?
     if executing?
-      STDERR.puts "----- exec acquire"
       @semaphore.acquire
     end
 
     if pending?
-      STDERR.puts "----- reset_counter"
       reset_counter
     else
-      STDERR.puts "----- start"
       start
     end
   end

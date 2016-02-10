@@ -1,6 +1,7 @@
 # encoding: utf-8
 require "logstash/namespace"
 require "thread_safe"
+require "concurrent"
 
 # This class is a Codec duck type
 # Using Composition, it maps from a stream identity to
@@ -37,41 +38,51 @@ module LogStash module Codecs class IdentityMapCodec
     end
   end
 
-  class MapCleaner
-    def initialize(imc, interval)
-      @imc, @interval = imc, interval
-      @running = false
+  class PeriodicRunner
+    def initialize(listener, interval, method_symbol)
+      @listener, @interval = listener, interval
+      @method_symbol = method_symbol
+      @running = Concurrent::AtomicBoolean.new(false)
     end
 
     def start
       return self if running?
-      @running = true
-      @thread = Thread.new(@imc) do |imc|
+      @running.make_true
+      @thread = Thread.new() do
         loop do
           sleep @interval
-          break if !@running
-          imc.map_cleanup
+          break if !running?
+          @listener.send(@method_symbol)
         end
       end
       self
     end
 
     def running?
-      @running
+      @running.value
     end
 
     def stop
       return if !running?
-      @running = false
-      @thread.wakeup if @thread.alive?
+      @running.make_false
+      if @thread.alive?
+        @thread.wakeup
+        @thread.join
+      end
+      @listener = nil
     end
   end
 
-  # A composite class to hold both the codec and the eviction_timeout
+  class NoopRunner
+    attr_reader :start, :stop
+    def running?() false; end
+  end
+
+  # A composite class to hold both the codec, the eviction_timeout and a last_used timestamp
   # instances of this Value Object are stored in the mapping hash
   class CodecValue
     attr_reader :codec
-    attr_accessor :timeout
+    attr_accessor :timeout, :auto_flush_timeout
 
     def initialize(codec)
       @codec = codec
@@ -92,7 +103,7 @@ module LogStash module Codecs class IdentityMapCodec
   CLEANER_INTERVAL = 60 * 5 # 5 minutes
 
   attr_reader :identity_map
-  attr_accessor :base_codec, :cleaner
+  attr_accessor :base_codec, :cleaner, :auto_flusher
 
   def initialize(codec)
     @base_codec = codec
@@ -100,7 +111,15 @@ module LogStash module Codecs class IdentityMapCodec
     @identity_map = ThreadSafe::Hash.new &method(:codec_builder)
     @max_identities = MAX_IDENTITIES
     @evict_timeout = EVICT_TIMEOUT
-    @cleaner = MapCleaner.new(self, CLEANER_INTERVAL)
+
+    @cleaner = PeriodicRunner.new(self, CLEANER_INTERVAL, :map_cleanup)
+    if codec.respond_to?(:use_mapper_auto_flush) &&
+        (@auto_flush_interval = codec.use_mapper_auto_flush)
+      @auto_flusher = PeriodicRunner.new(self, 0.5, :auto_flush_mapped)
+    else
+      @auto_flusher = NoopRunner.new
+    end
+
     @decode_block = lambda {|*| true }
     @eviction_block = nil
   end
@@ -124,7 +143,7 @@ module LogStash module Codecs class IdentityMapCodec
   # used to add  a non-default cleaner interval
   def cleaner_interval(interval)
     @cleaner.stop
-    @cleaner = MapCleaner.new(self, interval.to_i)
+    @cleaner = PeriodicRunner.new(self, interval.to_i, :map_cleanup)
     self
   end
 
@@ -133,6 +152,7 @@ module LogStash module Codecs class IdentityMapCodec
     @eviction_block = block
     self
   end
+
   # end Constructional/builder methods
   # ==============================================
 
@@ -164,16 +184,6 @@ module LogStash module Codecs class IdentityMapCodec
     stream_codec(identity).encode(event)
   end
 
-  def flush_mapped(listener)
-    listener_has_path = listener.respond_to?(:path)
-    identity_map.each do |identity, compo|
-      listener.path = identity if listener_has_path
-      compo.codec.flush do |event|
-        listener.process_event(event) rescue nil
-      end
-    end
-  end
-
   def flush(&block)
     all_codecs.each do |codec|
       #let ruby do its default args thing
@@ -192,10 +202,27 @@ module LogStash module Codecs class IdentityMapCodec
 
   def close()
     cleaner.stop
+    auto_flusher.stop
     all_codecs.each(&:close)
   end
   # end Codec API
   # ==============================================
+
+  def auto_flush_mapped
+    nowf = Time.now.to_f
+    identity_map.each do |identity, compo|
+      next unless nowf > compo.auto_flush_timeout
+      compo.codec.auto_flush
+    end
+  end
+
+  def flush_mapped(listener)
+    listener_has_path = listener.respond_to?(:path)
+    identity_map.each do |identity, compo|
+      listener.path = identity if listener_has_path
+      compo.codec.auto_flush(listener)
+    end
+  end
 
   def all_codecs
     no_streams? ? @base_codecs : identity_map.values.map(&:codec)
@@ -271,13 +298,20 @@ module LogStash module Codecs class IdentityMapCodec
     # only start the cleaner if streams are in use
     # continuous calls to start are OK
     cleaner.start
+    auto_flusher.start
     compo = find_codec_value(identity)
-    compo.timeout = eviction_timestamp
+    now = Time.now
+    compo.timeout = eviction_timestamp(now)
+    compo.auto_flush_timeout = auto_flush_timestamp(now)
     compo.codec
   end
 
-  def eviction_timestamp
-    Time.now.to_i + @evict_timeout
+  def auto_flush_timestamp(now = Time.now)
+    now.to_f + @auto_flush_interval.to_f
+  end
+
+  def eviction_timestamp(now = Time.now)
+    now.to_i + @evict_timeout
   end
 
   def check_map_limits
@@ -287,11 +321,16 @@ module LogStash module Codecs class IdentityMapCodec
 
   def codec_builder(hash, k)
     codec = hash.empty? ? @base_codec : @base_codec.clone
+    codec.use_mapper_auto_flush if using_mapped_auto_flush?
     compo = CodecValue.new(codec)
     hash.store(k, compo)
   end
 
   def no_streams?
     identity_map.empty?
+  end
+
+  def using_mapped_auto_flush?
+    !@auto_flush_interval.nil?
   end
 end end end

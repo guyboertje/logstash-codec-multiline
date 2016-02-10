@@ -104,7 +104,6 @@ module Mlc
       return if @delay.nil? || @delay.zero?
       sleep @delay
       @tracer.push [:delay, Time.now.to_f]
-      STDERR.puts "----- delayed run"
     end
   end
 
