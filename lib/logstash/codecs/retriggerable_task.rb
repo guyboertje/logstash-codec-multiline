@@ -1,21 +1,16 @@
 require "concurrent"
 
 module LogStash module Codecs class RetriggerableTask
-  class DummyListener
-    def timeout
-      STDOUT.puts "..... task timed out ....."
-    end
-  end
+  SLEEP_FOR = 0.25.freeze
 
   attr_reader :thread
 
-  def initialize(delay, listener = DummyListener.new)
-    @delay = calculate_delay(delay)
+  def initialize(delay, listener)
+    @count = calculate_count(delay)
     @listener = listener
-    @counter = Concurrent::AtomicFixnum.new(0 + @delay)
+    @counter = Concurrent::AtomicFixnum.new(0 + @count)
     @stopped = Concurrent::AtomicBoolean.new(false)
     @semaphore = Concurrent::Semaphore.new(1)
-    @semaphore.drain_permits
   end
 
   def retrigger
@@ -49,14 +44,16 @@ module LogStash module Codecs class RetriggerableTask
 
   private
 
-  def calculate_delay(value)
-    # in multiples of 0.25 seconds
-    return 1 if value < 0.25
-    (value / 0.25).floor
+  def calculate_count(value)
+    # in multiples of SLEEP_FOR (0.25) seconds
+    # if delay is 10 seconds then count is 40
+    # this only works when SLEEP_FOR is less than 1
+    return 1 if value < SLEEP_FOR
+    (value / SLEEP_FOR).floor
   end
 
   def reset_counter
-    @counter.value = 0 + @delay
+    @counter.value = 0 + @count
   end
 
   def running?
@@ -68,18 +65,12 @@ module LogStash module Codecs class RetriggerableTask
     @thread = Thread.new do
       while counter > 0
         break if stopped?
-        sleep 0.25
+        sleep SLEEP_FOR
         @counter.decrement
       end
 
       @semaphore.drain_permits
-      if !stopped?
-        if block_given?
-          yield
-        else
-          @listener.timeout
-        end
-      end
+      @listener.timeout if !stopped?
       @semaphore.release
     end
   end
