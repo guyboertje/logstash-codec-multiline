@@ -211,8 +211,12 @@ module LogStash module Codecs class IdentityMapCodec
     if !identity_count.zero?
       nowf = Time.now.to_f
       identity_map.each do |identity, compo|
+        next if compo.auto_flush_timeout.zero?
         next unless nowf > compo.auto_flush_timeout
         compo.codec.auto_flush
+        # at eof (tail and read) no more lines for a while or ever
+        # so reset compo.auto_flush_timeout
+        compo.auto_flush_timeout = 0
       end
     end
   end
