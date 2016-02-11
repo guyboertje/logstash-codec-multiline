@@ -49,7 +49,7 @@ module LogStash module Codecs class IdentityMapCodec
       return self if running?
       @running.make_true
       @thread = Thread.new() do
-        loop do
+        while running? do
           sleep @interval
           break if !running?
           @listener.send(@method_symbol)
@@ -82,7 +82,7 @@ module LogStash module Codecs class IdentityMapCodec
   # instances of this Value Object are stored in the mapping hash
   class CodecValue
     attr_reader :codec
-    attr_accessor :timeout, :auto_flush_timeout
+    attr_accessor :eviction_timeout, :auto_flush_timeout
 
     def initialize(codec)
       @codec = codec
@@ -111,8 +111,7 @@ module LogStash module Codecs class IdentityMapCodec
     @identity_map = ThreadSafe::Hash.new &method(:codec_builder)
     @max_identities = MAX_IDENTITIES
     @evict_timeout = EVICT_TIMEOUT
-
-    @cleaner = PeriodicRunner.new(self, CLEANER_INTERVAL, :map_cleanup)
+    cleaner_interval(CLEANER_INTERVAL)
     if codec.respond_to?(:use_mapper_auto_flush) &&
         (@auto_flush_interval = codec.use_mapper_auto_flush)
       @auto_flusher = PeriodicRunner.new(self, 0.5, :auto_flush_mapped)
@@ -142,7 +141,7 @@ module LogStash module Codecs class IdentityMapCodec
 
   # used to add  a non-default cleaner interval
   def cleaner_interval(interval)
-    @cleaner.stop
+    @cleaner.stop if @cleaner
     @cleaner = PeriodicRunner.new(self, interval.to_i, :map_cleanup)
     self
   end
@@ -209,10 +208,12 @@ module LogStash module Codecs class IdentityMapCodec
   # ==============================================
 
   def auto_flush_mapped
-    nowf = Time.now.to_f
-    identity_map.each do |identity, compo|
-      next unless nowf > compo.auto_flush_timeout
-      compo.codec.auto_flush
+    if !identity_count.zero?
+      nowf = Time.now.to_f
+      identity_map.each do |identity, compo|
+        next unless nowf > compo.auto_flush_timeout
+        compo.codec.auto_flush
+      end
     end
   end
 
@@ -241,14 +242,16 @@ module LogStash module Codecs class IdentityMapCodec
   # been accessed in the last @evict_timeout
   # period (default 1 hour)
   def map_cleanup
-    cut_off = Time.now.to_i
-    # delete_if is atomic
-    # contents should not mutate during this call
-    identity_map.delete_if do |identity, compo|
-      if (flag = compo.timeout <= cut_off)
-        evict_flush(compo.codec)
+    if !identity_count.zero?
+      nowi = Time.now.to_i
+      # delete_if is atomic
+      # contents should not mutate during this call
+      identity_map.delete_if do |identity, compo|
+        if (flag = compo.eviction_timeout <= nowi)
+          evict_flush(compo.codec)
+        end
+        flag
       end
-      flag
     end
     current_size_and_limit
   end
@@ -278,7 +281,7 @@ module LogStash module Codecs class IdentityMapCodec
   end
 
   def eviction_timestamp_for(identity)
-    find_codec_value(identity).timeout
+    find_codec_value(identity).eviction_timeout
   end
 
   private
@@ -301,7 +304,7 @@ module LogStash module Codecs class IdentityMapCodec
     auto_flusher.start
     compo = find_codec_value(identity)
     now = Time.now
-    compo.timeout = eviction_timestamp(now)
+    compo.eviction_timeout = eviction_timestamp(now)
     compo.auto_flush_timeout = auto_flush_timestamp(now)
     compo.codec
   end
