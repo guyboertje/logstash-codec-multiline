@@ -1,5 +1,4 @@
 # encoding: utf-8
-require "logstash/codecs/multiline"
 require "logstash/event"
 require "insist"
 require_relative "../supports/helpers.rb"

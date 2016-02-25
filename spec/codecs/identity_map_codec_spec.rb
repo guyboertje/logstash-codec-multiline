@@ -1,7 +1,6 @@
 # encoding: utf-8
 require "logstash/devutils/rspec/spec_helper"
 require "logstash/codecs/identity_map_codec"
-require "logstash/codecs/multiline"
 require_relative "../supports/helpers.rb"
 
 describe LogStash::Codecs::IdentityMapCodec do

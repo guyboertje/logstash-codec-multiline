@@ -1,6 +1,5 @@
 # encoding: utf-8
 require "logstash/codecs/auto_flush"
-require "logstash/codecs/multiline"
 require_relative "../supports/helpers.rb"
 
 describe "AutoFlush and AutoFlushUnset" do

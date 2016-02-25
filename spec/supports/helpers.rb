@@ -1,4 +1,4 @@
-
+require "logstash/codecs/multiline"
 
 def decode_events
   multiline =  LogStash::Codecs::Multiline.new(options)
@@ -66,7 +66,8 @@ module Mlc
   end
 
   class TracerBase
-    def initialize() @tracer = []; end
+    def initialize() @tracer = []; post_init(); end
+    def post_init() end
 
     def trace_for(symbol)
       params = @tracer.assoc(symbol)
@@ -114,6 +115,20 @@ module Mlc
     def flush(&block) @tracer.push [:flush, block.call]; end
     def close() @tracer.push [:close, true]; end
     def logger() @logger ||= MultilineLogTracer.new; end
+  end
+
+  class ListenerTracer < TracerBase
+    attr_reader :buf
+    def post_init() @buf = []; end
+    def flush(*)
+      return if @buf.empty?
+      @tracer.push([:flush, @buf.join(', ')])
+      @buf.clear
+    end
+    def buffer(line)
+      @tracer.push([:buffer, true])
+      @buf << line
+    end
   end
 end
 
