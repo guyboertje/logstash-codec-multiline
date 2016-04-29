@@ -96,7 +96,7 @@ module Mlc
   end
 
   class AutoFlushTracer < TracerBase
-    def auto_flush() simulate_execution_delay; @tracer.push [:auto_flush, true]; end
+    def auto_flush(*) simulate_execution_delay; @tracer.push [:auto_flush, true]; end
     def set_delay(delay)
       @delay = delay
     end
@@ -117,17 +117,13 @@ module Mlc
     def logger() @logger ||= MultilineLogTracer.new; end
   end
 
-  class ListenerTracer < TracerBase
-    attr_reader :buf
-    def post_init() @buf = []; end
-    def flush(*)
-      return if @buf.empty?
-      @tracer.push([:flush, @buf.join(', ')])
-      @buf.clear
-    end
-    def buffer(line)
-      @tracer.push([:buffer, true])
-      @buf << line
+  class AcceptTracer < TracerBase
+    attr_reader :lines
+    def post_init() @lines = []; end
+
+    def accept(line)
+      @tracer.push([:accept, true])
+      @lines << line
     end
   end
 end

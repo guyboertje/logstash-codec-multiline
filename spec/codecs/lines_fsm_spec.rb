@@ -1,9 +1,9 @@
-require "logstash/codecs/multiline_fsm"
+require "logstash/codecs/lines_fsm"
 require_relative "../supports/helpers.rb"
 
-describe LogStash::Codecs::MultilineFsm do
-  let(:listener) { Mlc::ListenerTracer.new() }
-  let(:buffer) { listener.buf}
+describe LogStash::LinesFsm do
+  let(:listener) { Mlc::AcceptTracer.new() }
+
   let(:what)   { :previous }
   let(:negate) { false }
   let(:regex)  { %r"\A\-{1,3}" }
@@ -18,8 +18,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, regex) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "foo, --bar, --baz"])
-      expect(buffer).to eq(["foo"])
+      expect(listener.lines).to eq(["foo", "foo\n--bar\n--baz"])
+      expect(subject.buffer).to eq("foo\n")
     end
   end
 
@@ -32,8 +32,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, regex) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["--foo", "--the, cat, sat, on, the, mat"])
-      expect(buffer).to eq(["--bar"])
+      expect(listener.lines).to eq(["--foo", "--the\ncat\nsat\non\nthe\nmat"])
+      expect(subject.buffer).to eq("--bar\n")
     end
   end
 
@@ -47,8 +47,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, regex) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "the -, cat -, sat -, on -, the -, mat"])
-      expect(buffer).to eq(["bar"])
+      expect(listener.lines).to eq(["foo", "the -\ncat -\nsat -\non -\nthe -\nmat"])
+      expect(subject.buffer).to eq("bar\n")
     end
   end
 
@@ -63,8 +63,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, regex) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo -", "the, cat, sat, on, the, mat -"])
-      expect(buffer).to eq(["bar -"])
+      expect(listener.lines).to eq(["foo -", "the\ncat\nsat\non\nthe\nmat -"])
+      expect(subject.buffer).to eq("bar -\n")
     end
   end
 
@@ -81,8 +81,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, beginr, endr, exclusive) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "--- begin ---, the, cat, sat, on, the, mat, --- end ---"])
-      expect(buffer).to eq(["bar"])
+      expect(listener.lines).to eq(["foo", "--- begin ---\nthe\ncat\nsat\non\nthe\nmat\n--- end ---"])
+      expect(subject.buffer).to eq("bar\n")
     end
   end
 
@@ -99,8 +99,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, beginr, endr, exclusive) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "the, cat, sat, on, the, mat"])
-      expect(buffer).to eq(["bar"])
+      expect(listener.lines).to eq(["foo", "the\ncat\nsat\non\nthe\nmat"])
+      expect(subject.buffer).to eq("bar\n")
     end
   end
 
@@ -117,8 +117,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, beginr, endr, exclusive) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "the, cat, sat, --- begin ---, on, the, mat"])
-      expect(buffer).to eq(["bar"])
+      expect(listener.lines).to eq(["foo", "the\ncat\nsat\n--- begin ---\non\nthe\nmat"])
+      expect(subject.buffer).to eq("bar\n")
     end
   end
 
@@ -135,8 +135,8 @@ describe LogStash::Codecs::MultilineFsm do
     subject { described_class.new(listener, negate, what, beginr, endr, exclusive) }
 
     it "flushes and buffers correctly" do
-      expect(listener.full_trace_for(:flush)).to eq(["foo", "the, cat, sat, on, the", "mat", "--- end ---"])
-      expect(buffer).to eq(["bar"])
+      expect(listener.lines).to eq(["foo", "the\ncat\nsat\non\nthe", "mat", "--- end ---"])
+      expect(subject.buffer).to eq("bar\n")
     end
   end
 end
